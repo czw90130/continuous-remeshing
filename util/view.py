@@ -10,14 +10,16 @@ import numpy as np
 from util.func import to_numpy
 
 from util.snapshot import Snapshot
+
+from typing import List, Dict
     
 
 class Viewer:
     def __init__(self, 
             target_vertices:torch.Tensor, #V,3 
             target_faces:torch.Tensor, #F,3 
-            snapshots:list[Snapshot],
-            vertex_colors:dict[str,list[np.array]]
+            snapshots:List[Snapshot],
+            vertex_colors:Dict[str,List[np.array]]
             ):
         self._target_vertices = target_vertices
         self._target_faces = target_faces
@@ -241,8 +243,8 @@ class Viewer:
 def show(
     target_vertices:torch.Tensor, #V,3 
     target_faces:torch.Tensor, #F,3 
-    snapshots:list[Snapshot],
-    vertex_colors:dict[str,list[np.array]]={}
+    snapshots:List[Snapshot],
+    vertex_colors:Dict[str,List[np.array]]={}
     ):
     for vc in vertex_colors.values():
         assert [c.shape[0] for c in vc] == [s.vertices.shape[0] for s in snapshots]

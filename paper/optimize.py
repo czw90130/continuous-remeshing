@@ -35,20 +35,20 @@ class OptimizeSettings:
     image_size:int = 512
     sphere_size:float = .5
     sphere_level:int = 2 #0->12,42,162,642,2562, 5->10k,40k,160k
-    sphere_shift:tuple[float,float,float] = None
-    cameras:tuple[int,int] = (4,4)
+    sphere_shift:Tuple[float,float,float] = None
+    cameras:Tuple[int,int] = (4,4)
     device = 'cuda'
 
     #optimizer common
     lr:float = 0.5
     laplacian_weight:float = .1
     ramp:float = 3.
-    betas:tuple[float,float,float] = (0.8,0.8,0)
+    betas:Tuple[float,float,float] = (0.8,0.8,0)
     remesh_interval:int = 1
-    edge_len_lims:tuple[float,float] = (.01,.15)
+    edge_len_lims:Tuple[float,float] = (.01,.15)
     
     #optimizer ours
-    gammas:tuple[float,float,float] = (0,0,0)
+    gammas:Tuple[float,float,float] = (0,0,0)
     nu_ref:float = 0.3
     edge_len_tol:float = .5
     gain:float = .2

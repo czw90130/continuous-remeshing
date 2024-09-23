@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import trimesh
 import imageio
+from typing import Tuple
 
 def to_numpy(*args):
     def convert(a):
@@ -33,7 +34,7 @@ def save_obj(
 def load_obj(
         filename:Path, 
         device='cuda'
-        ) -> tuple[torch.Tensor,torch.Tensor]:
+        ) -> Tuple[torch.Tensor,torch.Tensor]:
     filename = Path(filename)
     obj_path = filename.with_suffix('.obj')
     with open(obj_path) as file:
@@ -44,16 +45,16 @@ def load_obj(
     all_faces = []
     f = re.findall(f"(f {num} {num} {num})",obj_text)
     if f:
-        all_faces.append(np.array(f)[:,1:].astype(np.long).reshape(-1,3,1)[...,:1])
+        all_faces.append(np.array(f)[:,1:].astype(np.int64).reshape(-1,3,1)[...,:1])
     f = re.findall(f"(f {num}/{num} {num}/{num} {num}/{num})",obj_text)
     if f:
-        all_faces.append(np.array(f)[:,1:].astype(np.long).reshape(-1,3,2)[...,:2])
+        all_faces.append(np.array(f)[:,1:].astype(np.int64).reshape(-1,3,2)[...,:2])
     f = re.findall(f"(f {num}/{num}/{num} {num}/{num}/{num} {num}/{num}/{num})",obj_text)
     if f:
-        all_faces.append(np.array(f)[:,1:].astype(np.long).reshape(-1,3,3)[...,:2])
+        all_faces.append(np.array(f)[:,1:].astype(np.int64).reshape(-1,3,3)[...,:2])
     f = re.findall(f"(f {num}//{num} {num}//{num} {num}//{num})",obj_text)
     if f:
-        all_faces.append(np.array(f)[:,1:].astype(np.long).reshape(-1,3,2)[...,:1])
+        all_faces.append(np.array(f)[:,1:].astype(np.int64).reshape(-1,3,2)[...,:1])
     all_faces = np.concatenate(all_faces,axis=0)
     all_faces -= 1 #1-based indexing
     faces = all_faces[:,:,0]
@@ -114,13 +115,21 @@ def save_ply(
     full_verts = vertices[faces] #F,3,3
     
 def save_images(
-        images:torch.Tensor, #B,H,W,CH
-        dir:Path,
+        images: torch.Tensor,  # B,H,W,CH
+        dir: Path,
         ):
     dir = Path(dir)
-    dir.mkdir(parents=True,exist_ok=True)
+    dir.mkdir(parents=True, exist_ok=True)
     for i in range(images.shape[0]):
-        imageio.imwrite(dir/f'{i:02d}.png',(images.detach()[i,:,:,:3]*255).clamp(max=255).type(torch.uint8).cpu().numpy())
+        img = images.detach()[i] * 255  # 缩放到 0-255
+        img = img.clamp(0, 255).type(torch.uint8).cpu().numpy()
+        if img.shape[2] == 1:
+            # 单通道图像处理
+            img = np.repeat(img, 3, axis=2)
+        elif img.shape[2] > 3:
+            # 多余通道处理
+            img = img[:, :, :3]
+        imageio.imwrite(dir / f'{i:02d}.png', img)
 
 def normalize_vertices(
         vertices:torch.Tensor, #V,3
@@ -202,7 +211,7 @@ def make_star_cameras(az_count,pol_count,distance:float=10.,r=None,image_size=[5
 
     return mv, _projection(r,device)
 
-def make_sphere(level:int=2,radius=1.,device='cuda') -> tuple[torch.Tensor,torch.Tensor]:
+def make_sphere(level:int=2,radius=1.,device='cuda') -> Tuple[torch.Tensor,torch.Tensor]:
     sphere = trimesh.creation.icosphere(subdivisions=level, radius=1.0, color=None)
     vertices = torch.tensor(sphere.vertices, device=device, dtype=torch.float32) * radius
     faces = torch.tensor(sphere.faces, device=device, dtype=torch.long)
