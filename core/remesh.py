@@ -483,3 +483,60 @@ def flip_edges(
     flip_faces = flip_edges_neighbors[:,[[0,3,2],[1,2,3]]] #E",2,3
     faces.scatter_(dim=0,index=flip_edge_to_face.reshape(-1,1).expand(-1,3),src=flip_faces.reshape(-1,3))
     # 更新 faces，完成边的翻转
+    
+@torch.no_grad()
+def remesh(
+        vertices_etc: torch.Tensor,  # V,D
+        faces: torch.Tensor,         # F,3 long
+        min_edgelen: torch.Tensor,   # V
+        max_edgelen: torch.Tensor,   # V
+        flip: bool,
+        max_vertices=1e6,
+        lock_index: int = -1  # 新指定锁定顶点的索引
+    ):
+    # 添加虚拟节点和面以支持后续的操作
+    vertices_etc, faces = prepend_dummies(vertices_etc, faces)
+    vertices = vertices_etc[:, :3]  # 提取顶点坐标部分
+    nan_tensor = torch.tensor([torch.nan], device=min_edgelen.device)
+    min_edgelen = torch.concat((nan_tensor, min_edgelen))  # 在最小边长前添加NaN
+    max_edgelen = torch.concat((nan_tensor, max_edgelen))  # 在最大边长前添加NaN
+
+    # 边折叠步骤
+    edges, face_to_edge = calc_edges(faces)
+    edge_length = calc_edge_length(vertices, edges)
+    face_normals = calc_face_normals(vertices, faces, normalize=False)
+    vertex_normals = calc_vertex_normals(vertices, faces, face_normals)
+    face_collapse = calc_face_collapses(
+        vertices,
+        faces,
+        edges,
+        face_to_edge,
+        edge_length,
+        face_normals,
+        vertex_normals,
+        min_edgelen,
+        area_ratio=0.5,
+    )
+    shortness = (1 - edge_length / min_edgelen[edges].mean(dim=-1)).clamp_min_(0)
+    priority = face_collapse.float() + shortness
+    vertices_etc, faces = collapse_edges(vertices_etc, faces, edges, priority, lock_index=lock_index)
+
+    # 边分裂步骤
+    if vertices.shape[0] < max_vertices:
+        edges, face_to_edge = calc_edges(faces)  # 重新计算边与面到边的映射
+        vertices = vertices_etc[:, :3]  # 更新顶点坐标
+        edge_length = calc_edge_length(vertices, edges)  # 重新计算边长
+        splits = edge_length > max_edgelen[edges].mean(dim=-1)  # 标记需要分裂的边
+        vertices_etc, faces = split_edges(
+            vertices_etc, faces, edges, face_to_edge, splits, pack_faces=False
+        )  # 分裂标记的边
+
+    vertices_etc, faces = pack(vertices_etc, faces)  # 打包顶点和面，移除未使用的元素
+    vertices = vertices_etc[:, :3]  # 更新顶点坐标
+
+    # 可选：翻转边以优化网格质量
+    if flip:
+        edges, _, edge_to_face = calc_edges(faces, with_edge_to_face=True)  # 计算边到面的映射
+        flip_edges(vertices, faces, edges, edge_to_face, with_border=False)  # 翻转边
+
+    return remove_dummies(vertices_etc, faces)  # 移除之前添加的虚拟节点和面
