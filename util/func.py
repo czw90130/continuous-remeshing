@@ -32,37 +32,37 @@ def save_obj(
         file.write(bytes_io.getvalue().decode('UTF-8'))
 
 def load_obj(
-        filename:Path, 
+        filename: Path,
         device='cuda'
-        ) -> Tuple[torch.Tensor,torch.Tensor]:
+        ) -> Tuple[torch.Tensor, torch.Tensor]:
     filename = Path(filename)
     obj_path = filename.with_suffix('.obj')
     with open(obj_path) as file:
         obj_text = file.read()
     num = r"([0-9\.\-eE]+)"
-    v = re.findall(f"(v {num} {num} {num})",obj_text)
-    vertices = np.array(v)[:,1:].astype(np.float32)
+    v = re.findall(f"v {num} {num} {num}", obj_text)
+    vertices = np.array(v, dtype=np.float32)
+    
+    # 处理面
     all_faces = []
-    f = re.findall(f"(f {num} {num} {num})",obj_text)
-    if f:
-        all_faces.append(np.array(f)[:,1:].astype(np.int64).reshape(-1,3,1)[...,:1])
-    f = re.findall(f"(f {num}/{num} {num}/{num} {num}/{num})",obj_text)
-    if f:
-        all_faces.append(np.array(f)[:,1:].astype(np.int64).reshape(-1,3,2)[...,:2])
-    f = re.findall(f"(f {num}/{num}/{num} {num}/{num}/{num} {num}/{num}/{num})",obj_text)
-    if f:
-        all_faces.append(np.array(f)[:,1:].astype(np.int64).reshape(-1,3,3)[...,:2])
-    f = re.findall(f"(f {num}//{num} {num}//{num} {num}//{num})",obj_text)
-    if f:
-        all_faces.append(np.array(f)[:,1:].astype(np.int64).reshape(-1,3,2)[...,:1])
-    all_faces = np.concatenate(all_faces,axis=0)
-    all_faces -= 1 #1-based indexing
-    faces = all_faces[:,:,0]
+    face_patterns = [
+        r"f (\d+)(?:/\d*){0,2} (\d+)(?:/\d*){0,2} (\d+)(?:/\d*){0,2}(?: (\d+)(?:/\d*){0,2})*",
+    ]
+    
+    for pattern in face_patterns:
+        matches = re.findall(pattern, obj_text)
+        for match in matches:
+            face = [int(idx) for idx in match if idx]
+            # 将多边形面分割成三角形
+            for i in range(1, len(face) - 1):
+                all_faces.append([face[0], face[i], face[i+1]])
+    
+    faces = np.array(all_faces, dtype=np.int64) - 1  # 转换为0-based索引
 
-    vertices = torch.tensor(vertices,dtype=torch.float32,device=device)
-    faces = torch.tensor(faces,dtype=torch.long,device=device)
+    vertices = torch.tensor(vertices, dtype=torch.float32, device=device)
+    faces = torch.tensor(faces, dtype=torch.long, device=device)
 
-    return vertices,faces
+    return vertices, faces
 
 def save_ply(
         filename:Path,
@@ -210,6 +210,29 @@ def make_star_cameras(az_count,pol_count,distance:float=10.,r=None,image_size=[5
     mv = _translation(0, 0, -distance, device) @ mv
 
     return mv, _projection(r,device)
+
+def make_circular_cameras(num_cameras, distance: float = 10., r=None, image_size=[512,512], device='cuda'):
+    if r is None:
+        r = 1/distance
+    C = num_cameras
+
+    # 计算水平旋转角度
+    phi = torch.arange(0, C) * (2*torch.pi/C)
+    
+    # 创建旋转矩阵
+    rot = torch.eye(3, device=device)[None].expand(C, 3, 3).clone()
+    rot[:, 0, 0] = phi.cos()
+    rot[:, 0, 2] = phi.sin()
+    rot[:, 2, 0] = -phi.sin()
+    rot[:, 2, 2] = phi.cos()
+
+    # 创建模型视图矩阵
+    mv = torch.empty((C, 4, 4), device=device)
+    mv[:] = torch.eye(4, device=device)
+    mv[:, :3, :3] = rot
+    mv = _translation(0, 0, -distance, device) @ mv
+
+    return mv, _projection(r, device)
 
 def make_sphere(level:int=2,radius=1.,device='cuda') -> Tuple[torch.Tensor,torch.Tensor]:
     sphere = trimesh.creation.icosphere(subdivisions=level, radius=1.0, color=None)

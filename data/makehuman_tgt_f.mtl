@@ -1,0 +1,43 @@
+# MakeHuman exported MTL
+# www.makehumancommunity.org
+
+
+newmtl DefaultSkin
+Kd 0.6945 0.5421 0.4122
+Ks 0.3 0.3 0.3
+d 1
+
+newmtl long01
+Kd 1 1 1
+Ks 0.04706 0.04706 0.04706
+d 0
+map_Kd textures/long01_diffuse.png
+map_D textures/long01_diffuse.png
+
+newmtl Eye_brown
+Kd 1 1 1
+Ks 1 1 1
+d 0
+map_Kd textures/brown_eye.png
+map_D textures/brown_eye.png
+
+newmtl shadespinkMaterial
+Kd 0.8 0.8 0.8
+Ks 0 0 0
+d 0
+map_Kd textures/ShadesTex-PINK.png
+map_D textures/ShadesTex-PINK.png
+
+newmtl off_shoulder_top
+Kd 1 1 1
+Ks 0.1451 0.1451 0.1451
+d 0
+map_Kd textures/offshoulder_top.png
+map_D textures/offshoulder_top.png
+
+newmtl zipperMaterial
+Kd 0.64 0.64 0.64
+Ks 0 0 0
+d 0
+map_Kd textures/Peeptoe_boot_diff.png
+map_D textures/Peeptoe_boot_diff.png

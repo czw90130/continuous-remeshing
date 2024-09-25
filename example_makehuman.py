@@ -1,6 +1,6 @@
 from core.remesh import calc_vertex_normals  # 从 core.remesh 模块中导入计算顶点法线的函数
 from core.opt import MeshOptimizer           # 从 core.opt 模块中导入网格优化器类
-from util.func import load_obj, make_sphere, make_star_cameras, normalize_vertices, save_obj, save_images  # 导入实用函数
+from util.func import load_obj, make_sphere, make_circular_cameras, normalize_vertices, save_obj, save_images  # 导入实用函数
 from util.render import NormalsRenderer      # 导入法线渲染器类
 from tqdm import tqdm                        # 导入 tqdm 库用于显示进度条
 from util.snapshot import snapshot           # 导入快照函数
@@ -26,7 +26,7 @@ except ImportError:
     print("无法导入显示函数 'show'，设为 None")
 
 # 设置文件名和参数
-fname = 'data/makehuman_tgt.obj'                      # 目标模型的文件路径
+fname = 'data/makehuman_tgt_f.obj'                      # 目标模型的文件路径
 steps = 150                                # 优化的总步数
 snapshot_step = 1                            # 每隔多少步保存一次快照
 print(f"目标文件：{fname}")
@@ -34,7 +34,8 @@ print(f"优化步骤数：{steps}")
 print(f"快照间隔：{snapshot_step}")
 
 # 创建摄像机视角
-mv, proj = make_star_cameras(4, 4)           # 创建一个 4x4 的星型摄像机矩阵
+# mv, proj = make_star_cameras(4, 4)           # 创建一个 4x4 的星型摄像机矩阵
+mv, proj = make_circular_cameras(6)           # 创建一个 6 个摄像机的圆形摄像机矩阵
 print("创建摄像机视角完成")
 
 renderer = NormalsRenderer(mv, proj, [512, 512])  # 初始化法线渲染器，设置视图矩阵、投影矩阵和图像尺寸
@@ -62,7 +63,7 @@ print("目标图像保存完成")
 # 初始化待优化的模型
 print("初始化待优化的模型")
 # vertices, faces = make_sphere(level=2, radius=0.5)  # 创建一个初始的球形网格模型
-vertices, faces = load_obj('data/makehuman_base2.obj')  # 加载基础人体模型
+vertices, faces = load_obj('data/makehuman_base.obj')  # 加载基础人体模型
 vertices = normalize_vertices(vertices)  # 对顶点进行归一化处理
 init_vert_num = vertices.shape[0]
 init_face = deepcopy(faces)
