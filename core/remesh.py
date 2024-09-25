@@ -1,14 +1,14 @@
 import torch
 import torch.nn.functional as tfunc
 import torch_scatter
-from typing import Tuple
+from typing import Tuple, Optional
 
 def prepend_dummies(
         vertices:torch.Tensor, #V,D
         faces:torch.Tensor, #F,3 long
     )->Tuple[torch.Tensor,torch.Tensor]:
     """prepend dummy elements to vertices and faces to enable "masked" scatter operations"""
-    # 在顶点和面数据的前面添加虚拟元素，以便支持“掩码”式的 scatter 操作
+    # 在顶点和面数据的前面添加虚拟元素，以便支持"掩码"式的 scatter 操作
     
     V,D = vertices.shape
     vertices = torch.concat((torch.full((1,D),fill_value=torch.nan,device=vertices.device),vertices),dim=0)
@@ -114,7 +114,7 @@ def calc_face_normals(
     # 获取每个面对应的三个顶点坐标
     v0,v1,v2 = full_vertices.unbind(dim=1) #F,3
     # 将顶点坐标解绑定为独立的张量
-    face_normals = torch.cross(v1-v0,v2-v0, dim=1) #F,3
+    face_normals = torch.linalg.cross(v1-v0,v2-v0, dim=1) #F,3
     # 计算法线向量，通过两个边向量的叉乘得到
     if normalize:
         face_normals = tfunc.normalize(face_normals, eps=1e-6, dim=1) #TODO inplace?
@@ -163,40 +163,49 @@ def calc_face_ref_normals(
     return ref_normals
 
 def pack(
-        vertices:torch.Tensor, #V,3 first unused and nan
-        faces:torch.Tensor, #F,3 long, 0 for unused
-        )->Tuple[torch.Tensor,torch.Tensor]: #(vertices,faces), keeps first vertex unused
-    """removes unused elements in vertices and faces"""
-    # 移除顶点和面中未使用的元素
-    
+        vertices: torch.Tensor,  # V,D first unused and nan
+        faces: torch.Tensor,     # F,3 long, 0 for unused
+        initial_vertex_count: int = 0,  # 新增参数，初始顶点数量
+        return_mapping: bool = False,   # 是否返回面索引的映射
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    """Removes unused elements in vertices and faces, while preserving initial vertex indices if specified."""
+    # 移除未使用的顶点和面，必要时保留初始顶点的索引
+
     V = vertices.shape[0]
-    
-    # remove unused faces
+
     # 移除未使用的面
-    used_faces = faces[:,0]!=0
-    used_faces[0] = True
-    faces = faces[used_faces] #sync
-    # 保留第一个面，以及所有第一个顶点索引不为 0 的面
+    used_faces = faces[:, 0] != 0
+    used_faces[0] = True  # 保留虚拟面
+    faces_mapping = torch.arange(faces.shape[0], device=faces.device)[used_faces]
+    faces = faces[used_faces]  # 保留有效的面
 
-    # remove unused vertices
+    # 识别被使用的顶点
+    used_vertices = torch.zeros(V, dtype=torch.bool, device=vertices.device)
+    used_vertices.scatter_(dim=0, index=faces.view(-1), value=True)
+    used_vertices[0] = True  # 保留虚拟顶点
+
+    # 如果需要保留初始顶点的索引
+    if initial_vertex_count > 0:
+        # 保留初始顶点，无论是否被使用
+        used_vertices[:initial_vertex_count] = True
+
+    # 计算新的顶点索引映射
+    new_vertex_indices = torch.full((V,), -1, dtype=torch.long, device=vertices.device)  # 初始化为 -1
+    used_indices = used_vertices.nonzero(as_tuple=True)[0]  # 获取被使用的顶点索引
+    # 新的顶点索引，从 0 到 N-1，但初始顶点索引保持不变
+    new_indices = torch.arange(len(used_indices), device=vertices.device)
+    new_vertex_indices[used_indices] = new_indices
+
+    # 更新面中的顶点索引
+    faces = new_vertex_indices[faces]
+
     # 移除未使用的顶点
-    used_vertices = torch.zeros(V,3,dtype=torch.bool,device=vertices.device)
-    used_vertices.scatter_(dim=0,index=faces,value=True,reduce='add') #TODO int faster?
-    # 标记在 faces 中出现过的顶点为使用状态
-    used_vertices = used_vertices.any(dim=1)
-    used_vertices[0] = True
-    vertices = vertices[used_vertices] #sync
-    # 保留第一个顶点，以及所有被使用过的顶点
+    vertices = vertices[used_vertices]
 
-    # update used faces
-    # 更新面的顶点索引
-    ind = torch.zeros(V,dtype=torch.long,device=vertices.device)
-    V1 = used_vertices.sum()
-    ind[used_vertices] =  torch.arange(0,V1,device=vertices.device) #sync
-    faces = ind[faces]
-    # 将 faces 中的顶点索引更新为新的索引
-
-    return vertices,faces
+    if return_mapping:
+        return vertices, faces, faces_mapping
+    else:
+        return vertices, faces
 
 def split_edges(
         vertices:torch.Tensor, #V,3 first unused
@@ -204,6 +213,7 @@ def split_edges(
         edges:torch.Tensor, #E,2 long 0 for unused, lower vertex index first
         face_to_edge:torch.Tensor, #F,3 long 0 for unused
         splits, #E bool
+        lock_faces_index: torch.Tensor = None,  # 锁定的面索引
         pack_faces:bool=True,
         )->Tuple[torch.Tensor,torch.Tensor]: #(vertices,faces)
 
@@ -224,6 +234,14 @@ def split_edges(
     #   N0 = split[0]*[c0,s0,s2|c2] example:[0,0,0]
     #   N1 = split[1]*[c1,s1,s0|c0] example:[c1,s1,c0]
     #   N2 = split[2]*[c2,s2,s1|c1] example:[c2,s2,s1]
+
+    # 如果有锁定的面，需要确保分裂的边不属于锁定的面
+    if lock_faces_index is not None:
+        # 找出哪些边属于锁定的面
+        locked_faces_edges = face_to_edge[lock_faces_index].reshape(-1)  # 获取锁定面涉及的所有边
+        locked_edges = locked_faces_edges.unique()  # E'
+        # 将属于锁定面的边的 splits 设置为 False，防止其分裂
+        splits[locked_edges] = False
 
     V = vertices.shape[0]
     F = faces.shape[0]
@@ -246,7 +264,7 @@ def split_edges(
     # 更新顶点
     split_vertices = vertices[split_edges].mean(dim=1) #S,3
     # 计算细分边中点的位置，作为新的顶点
-    vertices = torch.concat((vertices,split_vertices),dim=0)
+    vertices = torch.cat((vertices,split_vertices),dim=0)
     # 将新的顶点添加到顶点列表中
 
     #faces
@@ -273,6 +291,7 @@ def collapse_edges(
         edges:torch.Tensor, #E,2 long 0 for unused, lower vertex index first
         priorities:torch.Tensor, #E float
         lock_index:int=-1, # Points with index < lock_index will not be deleted
+        lock_faces_index: torch.Tensor = None,  # 锁定的面索引
         stable:bool=False, #only for unit testing
         )->Tuple[torch.Tensor,torch.Tensor]: #(vertices,faces)
     """Collapse edges based on priorities."""
@@ -280,6 +299,16 @@ def collapse_edges(
 
     V = vertices.shape[0]
     
+    # 如果有锁定的面，需要确保坍缩的边不属于锁定的面
+    if lock_faces_index is not None:
+        # 找出哪些边属于锁定的面
+        faces_containing_edges = faces.unsqueeze(1)  # F,1,3
+        edges_expanded = edges.unsqueeze(0)          # 1,E,2
+        edge_in_face = (faces_containing_edges == edges_expanded.unsqueeze(-1)).any(-1).any(-1)  # F,E
+        edge_in_locked_face = edge_in_face[lock_faces_index].any(0)  # E
+        # 将属于锁定面的边的优先级设置为最低，防止其坍缩
+        priorities[edge_in_locked_face] = float('-inf')
+
     # check spacing
     # 计算边的排序
     _,order = priorities.sort(stable=stable) #E
@@ -408,6 +437,7 @@ def flip_edges(
         with_border:bool=True, #handle border edges (D=4 instead of D=6)
         with_normal_check:bool=True, #check face normal flips
         stable:bool=False, #only for unit testing
+        lock_index:int=-1, # 新增参数：锁定顶点的索引
     ):
     """Flip edges to improve mesh quality."""
     # 翻转边以改进网格质量
@@ -415,6 +445,12 @@ def flip_edges(
     V = vertices.shape[0]
     E = edges.shape[0]
     device=vertices.device
+    
+    # 创建锁定顶点的掩码
+    locked_vertices = torch.zeros(V, dtype=torch.bool, device=device)
+    if lock_index > 0:
+        locked_vertices[:lock_index+1] = True
+
     vertex_degree = torch.zeros(V,dtype=torch.long,device=device) #V long
     vertex_degree.scatter_(dim=0,index=edges.reshape(E*2),value=1,reduce='add')
     # 计算每个顶点的度（连接的边数）
@@ -423,6 +459,9 @@ def flip_edges(
     neighbors = faces[edge_to_face[:,:,0],neighbor_corner] #E,LR=2
     edge_is_inside = neighbors.all(dim=-1) #E
     # 判断边是否是内部边（两侧都有面）
+
+    # 确保不会翻转包含锁定顶点的边
+    edge_is_flippable = edge_is_inside & ~(locked_vertices[edges].any(dim=1))
 
     if with_border:
         # 处理边界情况
@@ -446,7 +485,7 @@ def flip_edges(
     #
     # 计算翻转后度的变化
     loss_change = 2 + neighbor_degrees.sum(dim=-1) - edge_degrees.sum(dim=-1) #E
-    candidates = torch.logical_and(loss_change<0, edge_is_inside) #E
+    candidates = torch.logical_and(loss_change<0, edge_is_flippable) #E
     loss_change = loss_change[candidates] #E'
     if loss_change.shape[0]==0:
         return
@@ -474,9 +513,9 @@ def flip_edges(
         e1 = v[:,1]
         cl = v[:,2]
         cr = v[:,3]
-        n = torch.cross(e1,cl) + torch.cross(cr,e1) #sum of old normal vectors 
-        flip.logical_and_(torch.sum(n*torch.cross(cr,cl),dim=-1)>0) #first new face
-        flip.logical_and_(torch.sum(n*torch.cross(cl-e1,cr-e1),dim=-1)>0) #second new face
+        n = torch.linalg.cross(e1,cl) + torch.linalg.cross(cr,e1) #sum of old normal vectors 
+        flip.logical_and_(torch.sum(n*torch.linalg.cross(cr,cl),dim=-1)>0) #first new face
+        flip.logical_and_(torch.sum(n*torch.linalg.cross(cl-e1,cr-e1),dim=-1)>0) #second new face
 
     flip_edges_neighbors = edges_neighbors[flip] #E",4
     flip_edge_to_face = edge_to_face[candidates,:,0][flip] #E",2
@@ -492,7 +531,8 @@ def remesh(
         max_edgelen: torch.Tensor,   # V
         flip: bool,
         max_vertices=1e6,
-        lock_index: int = -1  # 新指定锁定顶点的索引
+        lock_index: int = -1, #指定锁定顶点的索引
+        lock_faces_index: torch.Tensor = None,  # 锁定的面索引
     ):
     # 添加虚拟节点和面以支持后续的操作
     vertices_etc, faces = prepend_dummies(vertices_etc, faces)
@@ -519,7 +559,14 @@ def remesh(
     )
     shortness = (1 - edge_length / min_edgelen[edges].mean(dim=-1)).clamp_min_(0)
     priority = face_collapse.float() + shortness
-    vertices_etc, faces = collapse_edges(vertices_etc, faces, edges, priority, lock_index=lock_index)
+    vertices_etc, faces = collapse_edges(
+        vertices_etc,
+        faces,
+        edges,
+        priority,
+        lock_index=lock_index,
+        lock_faces_index=lock_faces_index,
+    )
 
     # 边分裂步骤
     if vertices.shape[0] < max_vertices:
@@ -528,15 +575,21 @@ def remesh(
         edge_length = calc_edge_length(vertices, edges)  # 重新计算边长
         splits = edge_length > max_edgelen[edges].mean(dim=-1)  # 标记需要分裂的边
         vertices_etc, faces = split_edges(
-            vertices_etc, faces, edges, face_to_edge, splits, pack_faces=False
+            vertices_etc,
+            faces,
+            edges,
+            face_to_edge,
+            splits,
+            lock_faces_index=lock_faces_index,
+            pack_faces=False
         )  # 分裂标记的边
 
-    vertices_etc, faces = pack(vertices_etc, faces)  # 打包顶点和面，移除未使用的元素
+    vertices_etc, faces, faces_mapping = pack(vertices_etc, faces, return_mapping=True)  # 打包顶点和面，移除未使用的元素
     vertices = vertices_etc[:, :3]  # 更新顶点坐标
 
     # 可选：翻转边以优化网格质量
     if flip:
         edges, _, edge_to_face = calc_edges(faces, with_edge_to_face=True)  # 计算边到面的映射
-        flip_edges(vertices, faces, edges, edge_to_face, with_border=False)  # 翻转边
-
-    return remove_dummies(vertices_etc, faces)  # 移除之前添加的虚拟节点和面
+        flip_edges(vertices, faces, edges, edge_to_face, with_border=False, lock_index=lock_index)  # 翻转边
+    _vertices_etc, _faces = remove_dummies(vertices_etc, faces)
+    return _vertices_etc, _faces, faces_mapping  # 移除之前添加的虚拟节点和面，并返回面索引映射
